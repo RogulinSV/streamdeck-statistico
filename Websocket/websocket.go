@@ -1,0 +1,132 @@
+package Websocket
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/RogulinSV/streamdeck-statistico/v2/Http"
+	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
+	"github.com/gorilla/websocket"
+)
+
+type Message struct {
+	code int
+	data []byte
+}
+
+func NewMessage(code int, data []byte) *Message {
+	return &Message{
+		code: code,
+		data: data,
+	}
+}
+
+func (m *Message) Describe() string {
+	return fmt.Sprintf("тип %s длина %d байт", m.GetType(), m.GetSize())
+}
+
+func (m *Message) GetType() string {
+	switch m.code {
+	case websocket.TextMessage:
+		return "text"
+	case websocket.BinaryMessage:
+		return "binary"
+	case websocket.CloseMessage:
+		return "close"
+	case websocket.PingMessage:
+		return "ping"
+	case websocket.PongMessage:
+		return "pong"
+	default:
+		return "unknown"
+	}
+}
+
+func (m *Message) GetSize() int {
+	return len(m.data)
+}
+
+type Connection struct {
+	connection *websocket.Conn
+	logger     Logger.Logger
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func NewConnection(stack Http.Stack, logger Logger.Logger) *Connection {
+	var connection *websocket.Conn
+	var err error
+
+	logger.Debug("Открытие WS-соединения", Logger.Context{})
+	connection, err = upgrader.Upgrade(stack.GetResponse(), stack.GetRequest(), nil)
+	if err != nil {
+		logger.Error("Не удалось открыть WS-соединение: {error}", Logger.Context{
+			"error": err,
+		})
+		return nil
+	}
+
+	return &Connection{
+		connection: connection,
+		logger:     logger,
+	}
+}
+
+func (c *Connection) Read() *Message {
+	var message *Message
+	var code int
+	var data []byte
+	var err error
+
+	c.logger.Debug("Чтение WS-сообщения", Logger.Context{})
+	code, data, err = c.connection.ReadMessage()
+	if err != nil {
+		c.logger.Error("Не удалось прочитать WS-сообщение: {error}", Logger.Context{
+			"error": err,
+		})
+		return nil
+	}
+
+	message = NewMessage(code, data)
+	c.logger.Debug("Получено WS-сообщение: {message}", Logger.Context{
+		"message": message.Describe(),
+	})
+
+	return message
+}
+
+func (c *Connection) Write(message *Message) bool {
+	var err error
+
+	c.logger.Debug("Отправка WS-сообщения: {message}", Logger.Context{
+		"message": message.Describe(),
+	})
+	err = c.connection.WriteMessage(message.code, message.data)
+	if err != nil {
+		c.logger.Error("Не удалось отправить WS-сообщение: {error}", Logger.Context{
+			"error": err,
+		})
+		return false
+	}
+
+	return true
+}
+
+func (c *Connection) Close() bool {
+	var err error
+
+	c.logger.Debug("Закрытие WS-соединения", Logger.Context{})
+	err = c.connection.Close()
+	if err != nil {
+		c.logger.Error("Не удалось закрыть WS-соединение: {error}", Logger.Context{
+			"error": err,
+		})
+		return false
+	}
+
+	return true
+}

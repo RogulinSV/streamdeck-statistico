@@ -12,6 +12,14 @@ import (
 
 type Context map[string]any
 
+func (c Context) With(context Context) Context {
+	for name, value := range context {
+		c[name] = value
+	}
+
+	return c
+}
+
 type Logger interface {
 	Debug(message string, context Context)
 	Info(message string, context Context)
@@ -61,7 +69,7 @@ func (h Handler) decorate(level Level, prefix string) string {
 	runtime.ReadMemStats(&memory)
 	var timestamp = time.Now().Format("2006-01-02 15:04:05")
 
-	return fmt.Sprintf("[%s %dMib] %s %s", timestamp, memory.Sys/1024/1024, prefixes[level], prefix)
+	return fmt.Sprintf("[%s %dMiB] %s %s", timestamp, memory.Sys/1024/1024, prefixes[level], prefix)
 }
 
 func (h Handler) format(message string, context Context) string {
