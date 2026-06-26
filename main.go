@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -9,12 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/RogulinSV/streamdeck-statistico/v2/Filesystem"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Http"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
+	"github.com/RogulinSV/streamdeck-statistico/v2/Scheduler"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Websocket"
 )
 
@@ -27,6 +30,89 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+type Result struct {
+	mutex *sync.Mutex
+	title string
+	value string
+	units string
+}
+
+func NewResult(title string) *Result {
+	return &Result{
+		mutex: &sync.Mutex{},
+		title: title,
+		value: "",
+		units: "",
+	}
+}
+
+func (r *Result) SetValue(value string, units string) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.value = value
+	r.units = units
+}
+
+var results = make(map[string]*Result)
+
+func SetResult(channel string, result *Result) {
+	results[channel] = result
+}
+
+func GetResult(channel string) *Result {
+	var result, ok = results[channel]
+
+	if ok {
+		return result
+	}
+
+	return nil
+}
+
+type Task struct {
+	title       string
+	payload     func(r *Result)
+	interval    uint
+	description string
+}
+
+func NewTask(title string, description string, payload func(r *Result), interval uint) Task {
+	return Task{
+		title:       title,
+		payload:     payload,
+		interval:    interval,
+		description: description,
+	}
+}
+
+func (t Task) Schedule(result *Result, scheduler Scheduler.Scheduler) *Scheduler.Scheduled {
+	return scheduler.Schedule(
+		Scheduler.NewTask(
+			func() {
+				t.payload(result)
+			},
+			time.Second*time.Duration(t.interval),
+			t.description,
+		),
+	)
+}
+
+func (t Task) Execute(result *Result) {
+	t.payload(result)
+}
+
+var tasks = make(map[string]Task)
+
+func NewTaskEachSecond(description string, title string, payload func(r *Result)) Task {
+	return NewTask(title, description, payload, 1)
+}
+
+func Register(tasks map[string]Task, logger Logger.Logger) {
+	tasks["utorrent/clients"] = NewTaskEachSecond("Загрузка количества клиентов uTorrent", "uClients", func(r *Result) {
+		r.SetValue("1", "ppl")
+	})
 }
 
 func main() {
@@ -51,6 +137,10 @@ func main() {
 	defer cleanup()
 	logger.Info("Программа запущена", Logger.Context{})
 
+	Register(tasks, logger.WithPrefix("[task] "))
+	var scheduler = Scheduler.NewScheduler(logger.WithPrefix("[scheduler] "))
+	defer scheduler.Close()
+
 	var handle = func(stack Http.Stack, channel string, logger Logger.Logger) {
 		var connection *Websocket.Connection
 		var ctx = Logger.Context{
@@ -73,7 +163,7 @@ func main() {
 				logger.Debug("Обработка полученных WS-данных из канала {channel}: {message}", Logger.Context{
 					"message": message.Describe(),
 				}.With(ctx))
-				message = HandleMessage(message)
+				message = HandleMessage(channel, message, scheduler)
 				if message != nil {
 					logger.Debug("Отправка сформированных WS-данных в канал {channel}: {message}", Logger.Context{
 						"message": message.Describe(),
@@ -189,10 +279,51 @@ func NewLogger(level Logger.Level, silent bool, output string) (Logger.Logger, f
 	return logger, cleanup
 }
 
-func UseLogger(logger Logger.Logger, prefix string) Logger.Logger {
-	return logger.WithPrefix(prefix)
+var scheduled map[string]*Scheduler.Scheduled
+
+func SetScheduled(channel string, s *Scheduler.Scheduled) {
+	scheduled[channel] = s
 }
 
-func HandleMessage(message *Websocket.Message) *Websocket.Message {
-	return Websocket.NewMessage(1, []byte("xxx"))
+func IsScheduled(channel string) bool {
+	if _, ok := scheduled[channel]; !ok {
+		return false
+	}
+	return true
+}
+
+type Output struct {
+	title string
+	value string
+	units string
+}
+
+func HandleMessage(channel string, message *Websocket.Message, scheduler Scheduler.Scheduler) *Websocket.Message {
+	var result *Result
+	var data []byte
+	var err error
+
+	if message.IsText() {
+		result = GetResult(channel)
+		if result == nil && !IsScheduled(channel) {
+			if task, ok := tasks[channel]; ok {
+				result = NewResult(task.title)
+				SetResult(channel, result)
+				SetScheduled(channel, task.Schedule(result, scheduler))
+			}
+		}
+	}
+
+	if result != nil {
+		data, err = json.Marshal(Output{
+			title: result.title,
+			value: result.value,
+			units: result.units,
+		})
+		if err != nil {
+
+		}
+	}
+
+	return Websocket.NewMessage(1, data)
 }

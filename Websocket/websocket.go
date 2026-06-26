@@ -25,6 +25,22 @@ func (m *Message) Describe() string {
 	return fmt.Sprintf("тип %s длина %d байт", m.GetType(), m.GetSize())
 }
 
+func (m *Message) IsText() bool {
+	return m.GetType() == "text"
+}
+
+func (m *Message) IsBinary() bool {
+	return m.GetType() == "binary"
+}
+
+func (m *Message) IsClose() bool {
+	return m.GetType() == "close"
+}
+
+func (m *Message) IsPing() bool {
+	return m.GetType() == "ping"
+}
+
 func (m *Message) GetType() string {
 	switch m.code {
 	case websocket.TextMessage:
