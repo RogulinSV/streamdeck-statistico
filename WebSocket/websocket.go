@@ -9,13 +9,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Message структура websocket-сообщения
+// Message структура вебсокетного сообщения
 type Message struct {
 	code int
 	data []byte
 }
 
-// NewMessage конструктор websocket-сообщения
+// NewMessage конструктор вебсокетного сообщения
 func NewMessage(code int, data []byte) *Message {
 	return &Message{
 		code: code,
@@ -23,37 +23,37 @@ func NewMessage(code int, data []byte) *Message {
 	}
 }
 
-// Describe метод реализует описание websocket-сообщения
+// Describe метод реализует описание вебсокетного сообщения
 func (m *Message) Describe() string {
 	return fmt.Sprintf("тип %s длина %d байт", m.GetType(), m.GetSize())
 }
 
-// IsText метод реализует проверку текстового типа websocket-сообщения
+// IsText метод реализует проверку текстового типа вебсокетного сообщения
 func (m *Message) IsText() bool {
 	return m.GetType() == "text"
 }
 
-// IsBinary метод реализует проверку двоичного типа websocket-сообщения
+// IsBinary метод реализует проверку двоичного типа вебсокетного сообщения
 func (m *Message) IsBinary() bool {
 	return m.GetType() == "binary"
 }
 
-// IsClose метод реализует проверку закрывающего типа websocket-сообщения
+// IsClose метод реализует проверку закрывающего типа вебсокетного сообщения
 func (m *Message) IsClose() bool {
 	return m.GetType() == "close"
 }
 
-// IsPing метод реализует проверку ping-типа websocket-сообщения
+// IsPing метод реализует проверку ping-типа вебсокетного сообщения
 func (m *Message) IsPing() bool {
 	return m.GetType() == "ping"
 }
 
-// IsPong метод реализует проверку pong-типа websocket-сообщения
+// IsPong метод реализует проверку pong-типа вебсокетного сообщения
 func (m *Message) IsPong() bool {
 	return m.GetType() == "pong"
 }
 
-// GetType метод реализует получение
+// GetType метод реализует получение текстового описания статуса вебсокетного сообщения
 func (m *Message) GetType() string {
 	switch m.code {
 	case websocket.TextMessage:
@@ -71,10 +71,12 @@ func (m *Message) GetType() string {
 	}
 }
 
+// GetSize метод реализует получение длины вебсокетного сообщения
 func (m *Message) GetSize() int {
 	return len(m.data)
 }
 
+// Connection структура обработчика вебсокетного подключения
 type Connection struct {
 	connection *websocket.Conn
 	logger     Logger.Logger
@@ -86,14 +88,15 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// NewConnection конструктор обработчика вебсокетного подключения
 func NewConnection(stack Http.Stack, logger Logger.Logger) *Connection {
 	var connection *websocket.Conn
 	var err error
 
-	logger.Debug("Открытие WS-соединения", Logger.Context{})
+	logger.Debug("Обновление HTTP-соединения до WS-соединения", Logger.Context{})
 	connection, err = upgrader.Upgrade(stack.GetResponse(), stack.GetRequest(), nil)
 	if err != nil {
-		logger.Error("Не удалось открыть WS-соединение: {error}", Logger.Context{
+		logger.Error("Не удалось обновить HTTP-соединение до WS-соединения: {error}", Logger.Context{
 			"error": err,
 		})
 		return nil
@@ -105,6 +108,7 @@ func NewConnection(stack Http.Stack, logger Logger.Logger) *Connection {
 	}
 }
 
+// Read метод реализует чтение входящих вебсокетных сообщений
 func (c *Connection) Read() *Message {
 	var message *Message
 	var code int
@@ -128,6 +132,7 @@ func (c *Connection) Read() *Message {
 	return message
 }
 
+// Write метод реализует запись исходящих вебсокетных сообщений
 func (c *Connection) Write(message *Message) bool {
 	var err error
 
@@ -145,6 +150,7 @@ func (c *Connection) Write(message *Message) bool {
 	return true
 }
 
+// Close метод реализует закрытие вебсокетного подключения
 func (c *Connection) Close() bool {
 	var err error
 

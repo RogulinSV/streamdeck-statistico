@@ -42,14 +42,9 @@ func main() {
 	defer logger.Close()
 
 	logger.Info("Программа запущена", Logger.Context{})
-	var l1 = logger.WithPrefix("[1] ")
-	var l2 = logger.WithPrefix("[2] ")
-	l2.Debug("test {num}", Logger.Context{"num": 1})
-	l1.Debug("test {num}", Logger.Context{"num": 2})
-	l2.Warn("test {num}", Logger.Context{"num": 3})
 }
 
-// NewLogger returns new logger instance with cleanup function
+// NewLogger возвращает журнал с функцией очистки по завершению работы
 func NewLogger(level Logger.Level, silent bool, output string) Logger.ClosableLogger {
 	var logger Logger.Logger
 	var cleanup = func() {

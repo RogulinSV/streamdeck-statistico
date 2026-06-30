@@ -13,6 +13,7 @@ var (
 	ErrIsDir     = errors.New("path is a directory")
 )
 
+// ResolveFilePath функция реализует разрешение полного пути файла
 func ResolveFilePath(input string) (string, error) {
 	var output string
 	var info os.FileInfo
@@ -43,10 +44,12 @@ func ResolveFilePath(input string) (string, error) {
 	return output, nil
 }
 
+// SplitFilePath функция реализует соединение частей файлового пути
 func SplitFilePath(input ...string) string {
 	return strings.Join(input, string(os.PathSeparator))
 }
 
+// OpenWriters функция реализует открытие файлых дескрипторов на запись
 func OpenWriters(input ...string) ([]io.Writer, error) {
 	var output []io.Writer
 	var file *os.File
@@ -69,6 +72,7 @@ func OpenWriters(input ...string) ([]io.Writer, error) {
 	return output, nil
 }
 
+// CloseWriters функция реализует закрытие файлых дескрипторов на запись
 func CloseWriters(writers []io.Writer) error {
 	var writer io.Writer
 	var err error
