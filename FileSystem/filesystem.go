@@ -1,4 +1,4 @@
-package Filesystem
+package FileSystem
 
 import (
 	"errors"

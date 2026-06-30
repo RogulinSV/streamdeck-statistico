@@ -1,4 +1,4 @@
-package Websocket
+package WebSocket
 
 import (
 	"fmt"
@@ -9,11 +9,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Message структура websocket-сообщения
 type Message struct {
 	code int
 	data []byte
 }
 
+// NewMessage конструктор websocket-сообщения
 func NewMessage(code int, data []byte) *Message {
 	return &Message{
 		code: code,
@@ -21,26 +23,37 @@ func NewMessage(code int, data []byte) *Message {
 	}
 }
 
+// Describe метод реализует описание websocket-сообщения
 func (m *Message) Describe() string {
 	return fmt.Sprintf("тип %s длина %d байт", m.GetType(), m.GetSize())
 }
 
+// IsText метод реализует проверку текстового типа websocket-сообщения
 func (m *Message) IsText() bool {
 	return m.GetType() == "text"
 }
 
+// IsBinary метод реализует проверку двоичного типа websocket-сообщения
 func (m *Message) IsBinary() bool {
 	return m.GetType() == "binary"
 }
 
+// IsClose метод реализует проверку закрывающего типа websocket-сообщения
 func (m *Message) IsClose() bool {
 	return m.GetType() == "close"
 }
 
+// IsPing метод реализует проверку ping-типа websocket-сообщения
 func (m *Message) IsPing() bool {
 	return m.GetType() == "ping"
 }
 
+// IsPong метод реализует проверку pong-типа websocket-сообщения
+func (m *Message) IsPong() bool {
+	return m.GetType() == "pong"
+}
+
+// GetType метод реализует получение
 func (m *Message) GetType() string {
 	switch m.code {
 	case websocket.TextMessage:
