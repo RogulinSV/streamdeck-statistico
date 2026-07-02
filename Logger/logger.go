@@ -239,7 +239,7 @@ func NewSyslogLogger(writers ...io.Writer) MultiLogger {
 
 	handler = &SyslogHandler{
 		prefix: prefix,
-		log:    log.New(writer, prefix, log.LstdFlags),
+		log:    log.New(writer, prefix, log.Lmsgprefix),
 	}
 
 	return MultiLogger{
