@@ -4,9 +4,12 @@ import (
 	"flag"
 	"io"
 	"os"
+	"syscall"
 
 	"github.com/RogulinSV/streamdeck-statistico/v2/FileSystem"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
+	"github.com/RogulinSV/streamdeck-statistico/v2/Scheduler"
+	"github.com/RogulinSV/streamdeck-statistico/v2/Workers"
 )
 
 var pwd string
@@ -21,7 +24,7 @@ func init() {
 }
 
 func main() {
-	// var port = flag.Int("port", 8080, "Порт сервера")
+	var port = flag.Uint("port", 8080, "Порт сервера")
 	var v = flag.Bool("v", false, "Флаг уровня отладки: общий")
 	var vv = flag.Bool("vv", false, "Флаг уровня отладки: усиленный")
 	var vvv = flag.Bool("vvv", false, "Флаг уровня отладки: максимальный")
@@ -42,6 +45,38 @@ func main() {
 	defer logger.Close()
 
 	logger.Info("Программа запущена", Logger.Context{})
+	var context, cancel = Scheduler.NewSignalContext(syscall.SIGINT, syscall.SIGTERM)
+	var scheduler = Scheduler.NewScheduler(context, logger.WithPrefix("[scheduler] "))
+	defer cancel()
+
+	logger.Debug("Загрузка фоновых задач", Logger.Context{})
+	var registry = Workers.NewWorkerRegistry()
+	registry.Add("torrent", Workers.NewTorrentRunner(), 10, 1)
+	logger.Info("Загружено фоновых задач: {count}", Logger.Context{
+		"count": registry.Count(),
+	})
+
+	logger.Debug("Запуск сервера в фоновом режиме", Logger.Context{})
+	go func(logger Logger.Logger) {
+		var server = Workers.NewServerRunner(uint16(*port), scheduler, registry, logger)
+		var worker = Scheduler.NewWorker("server", 0, 0, server)
+		var output = scheduler.Start(worker)
+		select {
+		case result, ok := <-output:
+			if ok {
+				logger.Debug("Изменилось количество клиентов: {value}", Logger.Context{
+					"value": result.GetMetric("clients").Value(),
+				})
+			}
+		case <-context.Done():
+			return
+		}
+	}(logger.WithPrefix("[worker:server] "))
+
+	<-context.Done()
+	logger.Debug("Завершение программы", Logger.Context{})
+	scheduler.Wait()
+	logger.Info("Программа завершена", Logger.Context{})
 }
 
 // NewLogger возвращает журнал с функцией очистки по завершению работы
@@ -72,6 +107,7 @@ func NewLogger(level Logger.Level, silent bool, output string) Logger.ClosableLo
 		writers, err = FileSystem.OpenWriters(file)
 		cleanup = func(logger Logger.Logger, output string) func() {
 			return func() {
+				logger.Debug("...", Logger.Context{})
 				var err = FileSystem.CloseWriters(files)
 				if err != nil {
 					logger.Error("Не удалось закрыть файл журнала {output}: {error}", Logger.Context{
