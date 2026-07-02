@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/RogulinSV/streamdeck-statistico/v2/Http"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
 	"github.com/gorilla/websocket"
 )
@@ -23,6 +22,14 @@ func NewMessage(code int, data []byte) *Message {
 	}
 }
 
+// NewTextMessage конструктор вебсокетного сообщения текстового формата
+func NewTextMessage(data []byte) *Message {
+	return &Message{
+		code: websocket.TextMessage,
+		data: data,
+	}
+}
+
 // Describe метод реализует описание вебсокетного сообщения
 func (m *Message) Describe() string {
 	return fmt.Sprintf("тип %s длина %d байт", m.GetType(), m.GetSize())
@@ -31,6 +38,11 @@ func (m *Message) Describe() string {
 // IsText метод реализует проверку текстового типа вебсокетного сообщения
 func (m *Message) IsText() bool {
 	return m.GetType() == "text"
+}
+
+// GetText метод реализует получение текстового сообщения
+func (m *Message) GetText() string {
+	return string(m.data)
 }
 
 // IsBinary метод реализует проверку двоичного типа вебсокетного сообщения
@@ -89,12 +101,12 @@ var upgrader = websocket.Upgrader{
 }
 
 // NewConnection конструктор обработчика вебсокетного подключения
-func NewConnection(stack Http.Stack, logger Logger.Logger) *Connection {
+func NewConnection(response http.ResponseWriter, request *http.Request, logger Logger.Logger) *Connection {
 	var connection *websocket.Conn
 	var err error
 
 	logger.Debug("Обновление HTTP-соединения до WS-соединения", Logger.Context{})
-	connection, err = upgrader.Upgrade(stack.GetResponse(), stack.GetRequest(), nil)
+	connection, err = upgrader.Upgrade(response, request, nil)
 	if err != nil {
 		logger.Error("Не удалось обновить HTTP-соединение до WS-соединения: {error}", Logger.Context{
 			"error": err,
