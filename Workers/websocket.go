@@ -6,8 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/RogulinSV/streamdeck-statistico/v2/Context"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Scheduler"
 	"github.com/RogulinSV/streamdeck-statistico/v2/WebSocket"
@@ -29,7 +32,7 @@ func NewWorkerRegistry() *WorkerRegistry {
 }
 
 func (r *WorkerRegistry) Add(channel string, runner Scheduler.Runner, timeout uint, delay uint) {
-	var worker = Scheduler.NewWorker(channel, time.Duration(timeout), time.Duration(delay), runner)
+	var worker = Scheduler.NewWorker(channel, time.Duration(timeout)*time.Second, time.Duration(delay)*time.Second, runner)
 	r.entries[channel] = workerRegistryEntry{
 		worker: worker,
 		result: Scheduler.NewResult(),
@@ -62,10 +65,13 @@ func (r *WorkerRegistry) GetResult(channel string) Scheduler.Result {
 	return nil
 }
 
-func (r *WorkerRegistry) setResult(channel string, result Scheduler.Result) bool {
-	var entry, ok = r.entries[channel]
-	if ok {
+func (r *WorkerRegistry) SetResult(channel string, result Scheduler.Result) bool {
+	var entry workerRegistryEntry
+	var ok bool
+
+	if entry, ok = r.entries[channel]; ok {
 		entry.result = result
+		r.entries[channel] = entry
 	}
 
 	return ok
@@ -87,53 +93,39 @@ func NewServerRunner(port uint16, scheduler *Scheduler.Scheduler, registry *Work
 	}
 }
 
-type Counter struct {
-	value    int
-	unsigned bool
-}
-
-func NewCounter(unsigned bool) *Counter {
-	return &Counter{
-		unsigned: unsigned,
-	}
-}
-
-func (c *Counter) Value() int {
-	return c.value
-}
-
-func (c *Counter) Increment(value int) int {
-	c.value += value
-
-	return c.Value()
-}
-
-func (c *Counter) Decrement(value int) int {
-	if !c.unsigned || c.value > value {
-		c.value -= value
-	} else {
-		c.value = 0
-	}
-
-	return c.Value()
-}
-
 func (r *ServerRunner) Run(context context.Context, result chan<- Scheduler.Result) {
 	var handler = http.NewServeMux()
 	var route string
-	var clients = NewCounter(true)
-	var send = func(value int) {
-		result <- Scheduler.NewResult().AddMetric("clients", Scheduler.NewMetric("Клиенты", strconv.Itoa(value), ""))
+	var clients sync.Map
+	var stat = func(clients *Counter) {
+		if context.Err() == nil {
+			result <- Scheduler.AddMetric("clients", Scheduler.NewMetric("Клиенты", clients.ToStr()))
+		}
 	}
 
 	route = "/subscribe/{channel}"
 	handler.HandleFunc(route, func(response http.ResponseWriter, request *http.Request) {
 		var channel = request.PathValue("channel")
-		var connection = WebSocket.NewConnection(response, request, r.logger)
+		var logger = r.logger.WithPrefix("[server(" + strings.Replace(route, "{channel}", channel, 1) + ") ")
+
+		var counter *Counter
+		if c, ok := clients.Load(channel); ok {
+			counter = c.(*Counter)
+			counter.Increment(1)
+		} else {
+			counter = NewCounter(1)
+			clients.Store(channel, counter)
+		}
+		stat(counter)
+		defer func() {
+			counter.Decrement(1)
+			stat(counter)
+		}()
+
+		var connection = WebSocket.NewConnection(response, request, logger)
 		if connection != nil {
-			send(clients.Increment(1))
-			r.handle(channel, connection, context)
-			send(clients.Decrement(1))
+			r.handle(channel, connection, counter, context)
+			connection.Close()
 		}
 	})
 	r.logger.Info("Добавлен обработчик запросов: {route}", Logger.Context{
@@ -146,7 +138,7 @@ func (r *ServerRunner) Run(context context.Context, result chan<- Scheduler.Resu
 	}
 	go func() {
 		<-context.Done()
-		r.shutdown(server)
+		r.stop(server)
 	}()
 	r.logger.Debug("Запуск HTTP-сервера {port}", Logger.Context{
 		"port": server.Addr,
@@ -159,12 +151,12 @@ func (r *ServerRunner) Run(context context.Context, result chan<- Scheduler.Resu
 	}
 }
 
-func (r *ServerRunner) shutdown(server *http.Server) {
-	var context, cancel = Scheduler.NewTimeoutContext(5)
+func (r *ServerRunner) stop(server *http.Server) {
+	var timeout, cancel = Context.WithTimeout(5, nil)
 	defer cancel()
 
 	r.logger.Debug("Остановка HTTP-сервера", Logger.Context{})
-	var err = server.Shutdown(context)
+	var err = server.Shutdown(timeout)
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		r.logger.Error("Не удалось остановить HTTP-сервер: {error}", Logger.Context{
 			"error": err,
@@ -174,60 +166,84 @@ func (r *ServerRunner) shutdown(server *http.Server) {
 	}
 }
 
-func (r *ServerRunner) handle(channel string, connection *WebSocket.Connection, context context.Context) {
-	defer connection.Close()
-	go func() {
-		<-context.Done()
-		connection.Close()
-	}()
-
+func (r *ServerRunner) handle(channel string, connection *WebSocket.Connection, counter *Counter, context context.Context) {
 	var message *WebSocket.Message
+
 	for {
+		if context.Err() != nil {
+			break
+		}
+
 		message = connection.Read()
-		if message != nil && message.IsText() {
-			var key = message.GetText()
-			if r.registry.Has(channel) {
-				if !r.scheduler.IsRunning(channel) {
-					var worker = r.registry.GetWorker(channel)
-					var output = r.scheduler.Start(worker)
-					go func() {
+		if message == nil {
+			break
+		}
+		if !message.IsText() {
+			continue
+		}
+
+		var metric = Scheduler.NewMetric("", "")
+
+		if r.registry.Has(channel) {
+			if !r.scheduler.HasWorker(channel) {
+				var worker = r.registry.GetWorker(channel)
+				r.scheduler.Start(worker)
+
+				go func(worker *Scheduler.Worker) {
+					for {
 						select {
-						case result, ok := <-output:
+						case result, ok := <-worker.Output():
 							if !ok {
 								r.logger.Error("Не удалось прочитать ответ воркера {worker}", Logger.Context{
 									"worker": worker.Describe(),
 								})
 								return
 							}
-							if !r.registry.setResult(channel, result) {
+							if !r.registry.SetResult(channel, result) {
 								r.logger.Error("Не удалось обновить ответ воркера {worker}", Logger.Context{
 									"worker": worker.Describe(),
 								})
 							}
+						case <-worker.Done():
+							return
 						case <-context.Done():
 							return
 						}
-					}()
-				}
-
-				var result = r.registry.GetResult(channel)
-				var metric Scheduler.Metric
-				if result.HasMetric(key) {
-					metric = result.GetMetric(key)
-				}
-
-				var data, err = json.Marshal(metric)
-				if err != nil {
-					message = WebSocket.NewTextMessage(data)
-					connection.Write(message)
-				} else {
-					r.logger.Error("Не удалось преобразовать ответ в JSON-формат: {error}", Logger.Context{
-						"error": err,
-					})
-				}
+					}
+				}(worker)
 			}
-		} else if context.Err() != nil {
-			return
+
+			var key = message.GetText()
+			var result = r.registry.GetResult(channel)
+			if result.HasMetric(key) {
+				metric = result.GetMetric(key)
+			}
+		}
+
+		if context.Err() != nil {
+			break
+		}
+
+		var data, err = json.Marshal(metric)
+		if err == nil {
+			message = WebSocket.NewTextMessage(data)
+			if !connection.Write(message) {
+				break
+			}
+		} else {
+			r.logger.Error("Не удалось преобразовать ответ в JSON-формат: {error}", Logger.Context{
+				"error": err,
+			})
+		}
+	}
+
+	if counter.Value() <= 1 {
+		var worker = r.scheduler.GetWorker(channel)
+		if worker != nil {
+			r.logger.Debug("Отмена воркера {worker}", Logger.Context{
+				"worker": worker.Describe(),
+			})
+			r.scheduler.Stop(worker)
 		}
 	}
 }

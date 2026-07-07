@@ -1,8 +1,13 @@
 package WebSocket
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
 	"github.com/gorilla/websocket"
@@ -90,8 +95,11 @@ func (m *Message) GetSize() int {
 
 // Connection структура обработчика вебсокетного подключения
 type Connection struct {
-	connection *websocket.Conn
-	logger     Logger.Logger
+	connection   *websocket.Conn
+	readTimeout  uint
+	readLimit    uint32
+	writeTimeout uint
+	logger       Logger.Logger
 }
 
 var upgrader = websocket.Upgrader{
@@ -115,8 +123,11 @@ func NewConnection(response http.ResponseWriter, request *http.Request, logger L
 	}
 
 	return &Connection{
-		connection: connection,
-		logger:     logger,
+		connection:   connection,
+		readTimeout:  60,
+		readLimit:    1 << 20,
+		writeTimeout: 10,
+		logger:       logger,
 	}
 }
 
@@ -127,12 +138,27 @@ func (c *Connection) Read() *Message {
 	var data []byte
 	var err error
 
+	err = c.connection.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout) * time.Second))
+	if err != nil {
+		c.logger.Error("Не удалось установить таймаут чтения WS-сообщения {timeout} сек: {error}", Logger.Context{
+			"timeout": c.readTimeout,
+			"error":   err,
+		})
+	}
+	c.connection.SetReadLimit(int64(c.readLimit))
+
 	c.logger.Debug("Чтение WS-сообщения", Logger.Context{})
 	code, data, err = c.connection.ReadMessage()
 	if err != nil {
-		c.logger.Error("Не удалось прочитать WS-сообщение: {error}", Logger.Context{
-			"error": err,
-		})
+		if c.isBroken(err) {
+			c.logger.Debug("Соединение закрыто клиентом", Logger.Context{})
+		} else if c.isTimeout(err) {
+			c.logger.Warn("Соединение закрыто сервером по таймауту", Logger.Context{})
+		} else {
+			c.logger.Error("Не удалось прочитать WS-сообщение: {error}", Logger.Context{
+				"error": err,
+			})
+		}
 		return nil
 	}
 
@@ -148,14 +174,28 @@ func (c *Connection) Read() *Message {
 func (c *Connection) Write(message *Message) bool {
 	var err error
 
+	err = c.connection.SetWriteDeadline(time.Now().Add(time.Duration(c.writeTimeout) * time.Second))
+	if err != nil {
+		c.logger.Error("Не удалось установить таймаут отправки WS-сообщения {timeout} сек: {error}", Logger.Context{
+			"timeout": c.writeTimeout,
+			"error":   err,
+		})
+	}
+
 	c.logger.Debug("Отправка WS-сообщения: {message}", Logger.Context{
 		"message": message.Describe(),
 	})
 	err = c.connection.WriteMessage(message.code, message.data)
 	if err != nil {
-		c.logger.Error("Не удалось отправить WS-сообщение: {error}", Logger.Context{
-			"error": err,
-		})
+		if c.isBroken(err) {
+			c.logger.Debug("Соединение закрыто клиентом", Logger.Context{})
+		} else if c.isTimeout(err) {
+			c.logger.Warn("Соединение закрыто сервером по таймауту", Logger.Context{})
+		} else {
+			c.logger.Error("Не удалось отправить WS-сообщение: {error}", Logger.Context{
+				"error": err,
+			})
+		}
 		return false
 	}
 
@@ -176,4 +216,32 @@ func (c *Connection) Close() bool {
 	}
 
 	return true
+}
+
+func (c *Connection) isBroken(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Соединение корректно внешней стороной
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNoStatusReceived) {
+		return true
+	}
+
+	// Соединение обрывается без close-фрейма
+	if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "connection reset by peer") || strings.Contains(err.Error(), "broken pipe") {
+		return true
+	}
+
+	return false
+}
+
+func (c *Connection) isTimeout(err error) bool {
+	var netErr net.Error
+
+	if err != nil {
+		return errors.As(err, &netErr) && netErr.Timeout()
+	}
+
+	return false
 }

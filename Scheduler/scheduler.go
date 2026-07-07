@@ -3,46 +3,25 @@ package Scheduler
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/signal"
 	"sync"
 	"time"
 
+	"github.com/RogulinSV/streamdeck-statistico/v2/Context"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
 )
 
-func NewTimeoutContext(timeout uint) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-}
-
-func NewSignalContext(signals ...os.Signal) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), signals...)
-}
-
 type Metric struct {
-	title string
-	value string
-	units string
+	Title string `json:"title"`
+	Value string `json:"value"`
+	Units string `json:"units"`
 }
 
-func NewMetric(title string, value string, units string) Metric {
+func NewMetric(title string, value string) Metric {
 	return Metric{
-		title: title,
-		value: value,
-		units: units,
+		Title: title,
+		Value: value,
+		Units: "",
 	}
-}
-
-func (m Metric) Title() string {
-	return m.title
-}
-
-func (m Metric) Value() string {
-	return m.value
-}
-
-func (m Metric) Units() string {
-	return m.units
 }
 
 type Result map[string]Metric
@@ -64,7 +43,19 @@ func (r Result) HasMetric(name string) bool {
 }
 
 func (r Result) GetMetric(name string) Metric {
-	return r[name]
+	if metric, ok := r[name]; ok {
+		return metric
+	}
+
+	return Metric{
+		Title: "",
+		Value: "",
+		Units: "",
+	}
+}
+
+func AddMetric(name string, metric Metric) Result {
+	return NewResult().AddMetric(name, metric)
 }
 
 type Runner interface {
@@ -78,6 +69,7 @@ type Worker struct {
 	delay   time.Duration
 	context context.Context
 	cancel  context.CancelFunc
+	output  chan Result
 }
 
 func NewWorker(id string, timeout time.Duration, delay time.Duration, runner Runner) *Worker {
@@ -89,8 +81,16 @@ func NewWorker(id string, timeout time.Duration, delay time.Duration, runner Run
 	}
 }
 
-func (w *Worker) Run(context context.Context, result chan<- Result) {
-	w.runner.Run(context, result)
+func (w *Worker) Run(context context.Context) {
+	w.runner.Run(context, w.output)
+}
+
+func (w *Worker) Done() <-chan struct{} {
+	return w.context.Done()
+}
+
+func (w *Worker) Output() <-chan Result {
+	return w.output
 }
 
 func (w *Worker) Describe() string {
@@ -113,17 +113,16 @@ func NewScheduler(context context.Context, logger Logger.Logger) *Scheduler {
 	}
 }
 
-func (s *Scheduler) Start(worker *Worker) <-chan Result {
-	s.Stop(worker.id)
+func (s *Scheduler) Start(worker *Worker) {
+	s.Stop(worker)
 
-	var result = make(chan Result)
-	worker.context, worker.cancel = context.WithCancel(s.context)
+	worker.output = make(chan Result)
+	worker.context, worker.cancel = Context.WithCancel(s.context)
 	s.workers.Store(worker.id, worker)
 	s.wg.Add(1)
 	var done = func() {
 		s.wg.Done()
 		s.workers.Delete(worker.id)
-		close(result)
 	}
 
 	go func() {
@@ -133,7 +132,7 @@ func (s *Scheduler) Start(worker *Worker) <-chan Result {
 			"worker": worker.Describe(),
 		})
 
-		var ctx context.Context
+		var timeout context.Context
 		var cancel context.CancelFunc
 		var duration time.Duration
 		var start time.Time
@@ -147,15 +146,15 @@ func (s *Scheduler) Start(worker *Worker) <-chan Result {
 			}
 
 			if worker.timeout > 0 {
-				ctx, cancel = context.WithTimeout(worker.context, worker.timeout)
+				timeout, cancel = Context.WithTimeout(uint(worker.timeout.Seconds()), worker.context)
 			} else {
-				ctx, cancel = context.WithCancel(worker.context)
+				timeout, cancel = Context.WithCancel(worker.context)
 			}
 			s.logger.Debug("Запуск задачи воркера {worker}", Logger.Context{
 				"worker": worker.Describe(),
 			})
 			start = time.Now()
-			worker.Run(ctx, result)
+			worker.Run(timeout)
 			duration = time.Now().Sub(start)
 			cancel()
 			s.logger.Debug("Завершение задачи воркера {worker}: {duration}", Logger.Context{
@@ -181,23 +180,28 @@ func (s *Scheduler) Start(worker *Worker) <-chan Result {
 			}
 		}
 	}()
-
-	return result
 }
 
-func (s *Scheduler) Stop(id string) {
-	if worker, ok := s.workers.Load(id); ok {
+func (s *Scheduler) Stop(worker *Worker) {
+	if w, ok := s.workers.Load(worker.id); ok {
 		s.logger.Debug("Воркер {worker} остановливается", Logger.Context{
-			"worker": worker.(*Worker).Describe(),
+			"worker": w.(*Worker).Describe(),
 		})
-		worker.(*Worker).cancel()
+		w.(*Worker).cancel()
+		close(w.(*Worker).output)
 	}
 }
 
-func (s *Scheduler) IsRunning(id string) bool {
-	var _, ok = s.workers.Load(id)
+func (s *Scheduler) GetWorker(id string) *Worker {
+	if worker, ok := s.workers.Load(id); ok {
+		return worker.(*Worker)
+	}
 
-	return ok
+	return nil
+}
+
+func (s *Scheduler) HasWorker(id string) bool {
+	return s.GetWorker(id) != nil
 }
 
 func (s *Scheduler) Wait() {

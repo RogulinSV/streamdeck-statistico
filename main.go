@@ -6,10 +6,12 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/RogulinSV/streamdeck-statistico/v2/Context"
 	"github.com/RogulinSV/streamdeck-statistico/v2/FileSystem"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Scheduler"
 	"github.com/RogulinSV/streamdeck-statistico/v2/Workers"
+	"github.com/RogulinSV/streamdeck-statistico/v2/Workers/Torrent"
 )
 
 var pwd string
@@ -41,17 +43,17 @@ func main() {
 		level = Logger.WARN
 	}
 
-	var logger = NewLogger(level, *silent, *output)
+	var logger = NewLogger("[kernel] ", level, *silent, *output)
 	defer logger.Close()
 
 	logger.Info("Программа запущена", Logger.Context{})
-	var context, cancel = Scheduler.NewSignalContext(syscall.SIGINT, syscall.SIGTERM)
+	var context, cancel = Context.HandleSignal(syscall.SIGINT, syscall.SIGTERM)
 	var scheduler = Scheduler.NewScheduler(context, logger.WithPrefix("[scheduler] "))
 	defer cancel()
 
 	logger.Debug("Загрузка фоновых задач", Logger.Context{})
 	var registry = Workers.NewWorkerRegistry()
-	registry.Add("torrent", Workers.NewTorrentRunner(), 10, 1)
+	registry.Add("torrent", Torrent.NewRunner(logger.WithPrefix("[worker.torrent] ")), 10, 5)
 	logger.Info("Загружено фоновых задач: {count}", Logger.Context{
 		"count": registry.Count(),
 	})
@@ -60,16 +62,21 @@ func main() {
 	go func(logger Logger.Logger) {
 		var server = Workers.NewServerRunner(uint16(*port), scheduler, registry, logger)
 		var worker = Scheduler.NewWorker("server", 0, 0, server)
-		var output = scheduler.Start(worker)
-		select {
-		case result, ok := <-output:
-			if ok {
-				logger.Debug("Изменилось количество клиентов: {value}", Logger.Context{
-					"value": result.GetMetric("clients").Value(),
-				})
+		scheduler.Start(worker)
+
+		for {
+			select {
+			case result, ok := <-worker.Output():
+				if ok {
+					logger.Debug("Изменилось количество клиентов: {value}", Logger.Context{
+						"value": result.GetMetric("clients").Value,
+					})
+				}
+			case <-worker.Done():
+				return
+			case <-context.Done():
+				return
 			}
-		case <-context.Done():
-			return
 		}
 	}(logger.WithPrefix("[worker:server] "))
 
@@ -80,7 +87,7 @@ func main() {
 }
 
 // NewLogger возвращает журнал с функцией очистки по завершению работы
-func NewLogger(level Logger.Level, silent bool, output string) Logger.ClosableLogger {
+func NewLogger(prefix string, level Logger.Level, silent bool, output string) Logger.ClosableLogger {
 	var logger Logger.Logger
 	var cleanup = func() {
 		// pass...
@@ -128,5 +135,5 @@ func NewLogger(level Logger.Level, silent bool, output string) Logger.ClosableLo
 		}
 	}
 
-	return Logger.NewClosableLogger(logger, cleanup)
+	return Logger.NewClosableLogger(logger, cleanup).WithPrefix(prefix).(Logger.ClosableLogger)
 }
