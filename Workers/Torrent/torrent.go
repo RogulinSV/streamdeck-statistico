@@ -77,11 +77,15 @@ func (r *Runner) getToken(http *Http.Client) string {
 
 	var response = http.PostForm(request)
 	if response != nil {
-		if response.GetHeaders().Has("X-Transmission-Session-Id") {
-			token = response.GetHeaders().Get("X-Transmission-Session-Id")
-			r.logger.Info("{token}", Logger.Context{
-				"token": token,
-			})
+		if response.IsSuccessful() {
+			if response.GetCookies().Has("SID") {
+				token = response.GetCookies().GetValue("SID")
+				r.logger.Info("{token}", Logger.Context{
+					"token": token,
+				})
+			}
+		} else {
+			r.logger.Error("Не удалось получить сессию клиента", Logger.Context{})
 		}
 	} else {
 		r.logger.Error("Не удалось получить сессию клиента", Logger.Context{})
