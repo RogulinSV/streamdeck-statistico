@@ -22,3 +22,7 @@ func WithCancel(parent context.Context) (context.Context, context.CancelFunc) {
 func HandleSignal(signals ...os.Signal) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), signals...)
 }
+
+func Canceled(c context.Context) bool {
+	return c.Err() == nil
+}

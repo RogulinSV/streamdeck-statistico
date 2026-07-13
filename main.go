@@ -53,7 +53,11 @@ func main() {
 
 	logger.Debug("Загрузка фоновых задач", Logger.Context{})
 	var registry = Workers.NewWorkerRegistry()
-	registry.Add("torrent", Torrent.NewRunner(logger.WithPrefix("[worker.torrent] ")), 10, 5)
+
+	registry.Add("torrent", Torrent.NewRunner(
+		Torrent.NewConfig("http://localhost:1010", "admin", ""),
+		logger.WithPrefix("[worker.torrent] "),
+	), 10, 5)
 	logger.Info("Загружено фоновых задач: {count}", Logger.Context{
 		"count": registry.Count(),
 	})
