@@ -22,6 +22,14 @@ func (r *Response) GetHeaders() *Headers {
 	return r.headers
 }
 
+func (r *Response) GetCookies() *Cookies {
+	return r.cookies
+}
+
+func (r *Response) IsSuccessful() bool {
+	return r.code == 200
+}
+
 func (r *Response) GetContentType() string {
 	var value string
 

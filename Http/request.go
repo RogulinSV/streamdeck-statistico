@@ -241,6 +241,20 @@ func (c *Cookies) Set(name string, value string) *Cookies {
 	return c
 }
 
+func (c *Cookies) Has(name string) bool {
+	var _, ok = c.items[name]
+
+	return ok
+}
+
+func (c *Cookies) GetValue(name string) string {
+	if cookie, ok := c.items[name]; ok {
+		return cookie.Value
+	}
+
+	return ""
+}
+
 func (c *Cookies) Size() int {
 	return len(c.items)
 }
