@@ -1,20 +1,22 @@
 package Http
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
 	"maps"
-	"mime/multipart"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RogulinSV/streamdeck-statistico/v2/Logger"
+)
+
+const (
+	DefaultUserAgent = "Mozilla/5.0 (Windows NT 6.2; WOW64) AppleWebKit/537.46 (KHTML, like Gecko) Chrome/50.0.3922.369 Safari/600"
 )
 
 type Progress func(uint8, Logger.Logger)
@@ -77,7 +79,6 @@ func (c *Client) WithContext(context *Context) *Client {
 
 func (c *Client) Get(r *GetRequest) *Response {
 	var method = http.MethodGet
-	var buffer = &bytes.Buffer{}
 	var request *http.Request
 	var uri string
 	var err error
@@ -87,15 +88,9 @@ func (c *Client) Get(r *GetRequest) *Response {
 		return nil
 	}
 
-	request, err = http.NewRequestWithContext(c.context.context, method, uri, &progress{
-		Reader: buffer,
-		total:  buffer.Len(),
-		progress: func(percent uint8) {
-			c.context.progress(percent, c.logger)
-		},
-	})
+	request, err = http.NewRequestWithContext(c.context.context, method, uri, nil)
 	if err != nil {
-		c.logger.Error("", Logger.Context{
+		c.logger.Error("Не удалось подготовить GET-запрос: {error}", Logger.Context{
 			"error": err,
 		})
 		return nil
@@ -107,73 +102,12 @@ func (c *Client) Get(r *GetRequest) *Response {
 	return c.send(request)
 }
 
-func (c *Client) PostForm(r *PostFormRequest) *Response {
-	var method = http.MethodPost
-	var buffer = &bytes.Buffer{}
-	var writer = multipart.NewWriter(buffer)
-	var closed = false
-	var request *http.Request
-	var uri string
-	var err error
-
-	var done = func() {
-		if !closed {
-			err = writer.Close()
-			if err != nil {
-				c.logger.Error("", Logger.Context{
-					"error": err,
-				})
-			} else {
-				closed = true
-			}
-		}
-	}
-	defer done()
-
-	uri = getQuery(r.url, r.query, c.logger)
-	if uri == "" {
-		return nil
-	}
-
-	if r.HasFiles() {
-		if !setFiles(writer, r.GetFiles(), c.logger) {
-			return nil
-		}
-	}
-	if r.HasData() {
-		if !setData(writer, r.GetData(), c.logger) {
-			return nil
-		}
-	}
-	done()
-
-	request, err = http.NewRequestWithContext(c.context.context, method, uri, &progress{
-		Reader: buffer,
-		total:  buffer.Len(),
-		progress: func(percent uint8) {
-			c.context.progress(percent, c.logger)
-		},
-	})
-	if err != nil {
-		c.logger.Error("", Logger.Context{
-			"error": err,
-		})
-		return nil
-	}
-	request.Header.Set("Content-Type", writer.FormDataContentType())
-	request.Header.Set("Content-Length", strconv.Itoa(buffer.Len()))
-
-	setHeaders(request, r.GetHeaders(), c.logger)
-	setCookies(request, r.GetCookies(), c.logger)
-
-	return c.send(request)
-}
-
-func (c *Client) PostJson(r *PostJsonRequest) *Response {
+func (c *Client) Post(r *PostRequest) *Response {
 	var method = http.MethodPost
 	var reader *strings.Reader
 	var request *http.Request
-	var json string
+	var data Data
+	var serialized string
 	var uri string
 	var err error
 
@@ -182,27 +116,26 @@ func (c *Client) PostJson(r *PostJsonRequest) *Response {
 		return nil
 	}
 
-	json, err = r.GetJson().Serialize()
+	data = r.GetData()
+	serialized, err = data.Serialize()
 	if err != nil {
-		c.logger.Error("", Logger.Context{})
-		return nil
-	}
-	reader = strings.NewReader(json)
-
-	request, err = http.NewRequestWithContext(c.context.context, method, uri, &progress{
-		Reader: reader,
-		total:  reader.Len(),
-		progress: func(percent uint8) {
-			c.context.progress(percent, c.logger)
-		},
-	})
-	if err != nil {
-		c.logger.Error("", Logger.Context{
+		c.logger.Error("Не удалось преобразовать {type}-данные в строку: {error}", Logger.Context{
+			"type":  data.GetType(),
 			"error": err,
 		})
 		return nil
 	}
-	request.Header.Set("Content-Type", "application/json")
+
+	reader = strings.NewReader(serialized)
+	request, err = http.NewRequestWithContext(c.context.context, method, uri, reader)
+	if err != nil {
+		c.logger.Error("Не удалось подготовить POST-запрос с {type}-данными: {error}", Logger.Context{
+			"type":  data.GetType(),
+			"error": err,
+		})
+		return nil
+	}
+	request.Header.Set("Content-Type", data.GetType())
 	request.Header.Set("Content-Length", strconv.Itoa(reader.Len()))
 
 	setHeaders(request, r.GetHeaders(), c.logger)
@@ -213,52 +146,73 @@ func (c *Client) PostJson(r *PostJsonRequest) *Response {
 
 func (c *Client) send(request *http.Request) *Response {
 	var response *http.Response
+	var dump []byte
 	var err error
+
+	dump, err = httputil.DumpRequestOut(request, true)
+	if err != nil {
+		c.logger.Warn("Не удалось получить тело {method}-запроса: {error}", Logger.Context{
+			"method": request.Method,
+			"error":  err,
+		})
+	}
 
 	var transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: !c.context.secure,
 		},
+		DisableKeepAlives: true,
 	}
 	var client = &http.Client{
 		Transport: transport,
 		Timeout:   time.Duration(c.context.timeout) * time.Second,
 	}
+	c.logger.Debug("Отправка {method}-запроса на адрес {uri}", Logger.Context{
+		"method": request.Method,
+		"uri":    request.URL.String(),
+	})
 	response, err = client.Do(request)
 	if err != nil {
-		c.logger.Error("", Logger.Context{
-			"error": err,
+		c.logger.Error("Не удалось отправить {method}-запрос на адрес {uri}: {error}", Logger.Context{
+			"method": request.Method,
+			"uri":    request.URL.String(),
+			"error":  err,
 		})
 		return nil
 	}
 	defer func() {
 		err = response.Body.Close()
 		if err != nil {
-			c.logger.Error("", Logger.Context{
+			c.logger.Error("Не удалось закрыть тело ответа: {error}", Logger.Context{
 				"error": err,
 			})
 		}
 	}()
 
-	return c.parse(response)
+	var r = c.parse(response)
+	if r != nil {
+		r.dump = dump
+	}
+
+	return r
 }
 
 func (c *Client) parse(response *http.Response) *Response {
-	var code uint8
+	var code uint16
 	var body []byte
-	var headers = &Headers{}
-	var cookies = &Cookies{}
+	var headers = NewHeaders()
+	var cookies = NewCookies()
 	var err error
 
 	body, err = io.ReadAll(response.Body)
 	if err != nil {
-		c.logger.Error("", Logger.Context{
+		c.logger.Error("Не удалось прочитать тело ответа: {error}", Logger.Context{
 			"error": err,
 		})
 		return nil
 	}
 
-	code = uint8(response.StatusCode)
+	code = uint16(response.StatusCode)
 	for name := range maps.Keys(response.Header) {
 		headers.Add(name, response.Header.Get(name))
 	}
@@ -280,7 +234,8 @@ func getQuery(u string, query *Query, logger Logger.Logger) string {
 	})
 	parsed, err = url.Parse(u)
 	if err != nil {
-		logger.Error("Не удалось разобрать адрес HTTP-запроса: {error}", Logger.Context{
+		logger.Error("Не удалось разобрать адрес HTTP-запроса '{uri}': {error}", Logger.Context{
+			"uri":   u,
 			"error": err,
 		})
 		return ""
@@ -320,87 +275,4 @@ func setHeaders(r *http.Request, headers *Headers, logger Logger.Logger) {
 			"name": name,
 		})
 	}
-}
-
-func setFiles(writer *multipart.Writer, f *Files, logger Logger.Logger) bool {
-	var name, path string
-	var err error
-
-	logger.Debug("Добавление файлов в запрос: {count}", Logger.Context{
-		"count": f.Size(),
-	})
-
-	var files []*os.File
-	defer func() {
-		for _, file := range files {
-			err = file.Close()
-			if err != nil {
-				logger.Error("Не удалось закрыть файл '{path}': {error}", Logger.Context{
-					"path":  file.Name(),
-					"error": err,
-				})
-			}
-		}
-	}()
-
-	for name, path = range f.Iterate() {
-		var temp io.Writer
-		var file *os.File
-		var size int64
-		temp, err = writer.CreateFormFile(name, path)
-		if err != nil {
-			logger.Error("Не удалось добавить файл '{path}' в HTTP-запрос: {error}", Logger.Context{
-				"path":  path,
-				"error": err,
-			})
-			return false
-		}
-		file, err = os.Open(path)
-		if err != nil {
-			logger.Error("Не удалось открыть файл '{path}' на чтение: {error}", Logger.Context{
-				"path":  path,
-				"error": err,
-			})
-			return false
-		}
-		files = append(files, file)
-		size, err = io.Copy(temp, file)
-		if err != nil {
-			logger.Error("Не удалось переместить файл '{path}': {error}", Logger.Context{
-				"path":  path,
-				"error": err,
-			})
-			return false
-		}
-		logger.Debug(" - Добавлен файл: {name} {size} байт", Logger.Context{
-			"name": name,
-			"size": size,
-		})
-	}
-
-	return true
-}
-
-func setData(writer *multipart.Writer, data *FormData, logger Logger.Logger) bool {
-	var name, value string
-	var err error
-
-	logger.Debug("Добавление полей в запрос: {count}", Logger.Context{
-		"count": data.Size(),
-	})
-	for name, value = range data.Iterate() {
-		err = writer.WriteField(name, value)
-		if err != nil {
-			logger.Error("Не удалось добавить поле '{field}' в HTTP-запрос: {error}", Logger.Context{
-				"field": name,
-				"error": err,
-			})
-			return false
-		}
-		logger.Debug(" - Добавлено поле: {name}", Logger.Context{
-			"name": name,
-		})
-	}
-
-	return true
 }
