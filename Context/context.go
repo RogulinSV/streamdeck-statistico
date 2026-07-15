@@ -24,5 +24,5 @@ func HandleSignal(signals ...os.Signal) (context.Context, context.CancelFunc) {
 }
 
 func Canceled(c context.Context) bool {
-	return c.Err() == nil
+	return c.Err() != nil
 }
