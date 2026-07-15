@@ -24,10 +24,25 @@ func NewMetric(title string, value string) Metric {
 	}
 }
 
+func (m Metric) WithUnits(units string) Metric {
+	var mm = m
+	mm.Units = units
+
+	return mm
+}
+
 type Result map[string]Metric
 
 func NewResult() Result {
 	return make(Result)
+}
+
+func (r Result) Merge(result Result) Result {
+	for name, metric := range result {
+		r.AddMetric(name, metric)
+	}
+
+	return r
 }
 
 func (r Result) AddMetric(name string, metric Metric) Result {
@@ -59,6 +74,7 @@ func AddMetric(name string, metric Metric) Result {
 }
 
 type Runner interface {
+	Defaults() Result
 	Run(context context.Context, result chan<- Result)
 }
 
@@ -83,6 +99,10 @@ func NewWorker(id string, timeout time.Duration, delay time.Duration, runner Run
 
 func (w *Worker) Run(context context.Context) {
 	w.runner.Run(context, w.output)
+}
+
+func (w *Worker) Defaults() Result {
+	return w.runner.Defaults()
 }
 
 func (w *Worker) Done() <-chan struct{} {
