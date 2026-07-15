@@ -30,6 +30,7 @@ type Logger interface {
 	Error(message string, context Context)
 	Fatal(message string, context Context)
 	WithPrefix(prefix string) Logger
+	GetPrefix() string
 }
 
 // Level тип данных уровня важности сообщений отладочного журнала
@@ -55,6 +56,7 @@ var prefixes = map[Level]string{
 type Handler interface {
 	Write(level Level, message string, context Context)
 	WithPrefix(prefix string) Handler
+	GetPrefix() string
 }
 
 // NullHandler структура обработчика сообщений без полезной нагрузки
@@ -68,6 +70,11 @@ func (h *NullHandler) Write(level Level, message string, context Context) {
 // WithPrefix метод реализует интерфейс обработчика сообщений
 func (h *NullHandler) WithPrefix(prefix string) Handler {
 	return h
+}
+
+// GetPrefix метод реализует интерфейс обработчика сообщений
+func (h *NullHandler) GetPrefix() string {
+	return ""
 }
 
 // format метод реализует форматирование сообщения отладочного журнала
@@ -117,6 +124,11 @@ func (h *FilterHandler) WithPrefix(prefix string) Handler {
 	)
 }
 
+// GetPrefix метод реализует интерфейс обработчика сообщений
+func (h *FilterHandler) GetPrefix() string {
+	return h.handler.GetPrefix()
+}
+
 // SyslogHandler структура обработчика сообщений отладочного журнала на базе системного журнала log.Logger
 type SyslogHandler struct {
 	NullHandler
@@ -147,6 +159,11 @@ func (h *SyslogHandler) WithPrefix(prefix string) Handler {
 	return NewSyslogHandler(prefix, h.log)
 }
 
+// GetPrefix метод реализует интерфейс обработчика сообщений
+func (h *SyslogHandler) GetPrefix() string {
+	return h.prefix
+}
+
 // NullLogger структура отладочного журнала без полезной нагрузки
 type NullLogger struct{}
 
@@ -163,6 +180,7 @@ func (l NullLogger) Fatal(message string, context Context) {}
 func (l NullLogger) WithPrefix(prefix string) Logger {
 	return l
 }
+func (l NullLogger) GetPrefix() string { return "" }
 
 // MultiLogger структура отладочного журнала с коллекцией обработчиков сообщений
 type MultiLogger struct {
@@ -221,6 +239,15 @@ func (l MultiLogger) WithPrefix(prefix string) Logger {
 	}
 
 	return NewMultiLogger(handlers...)
+}
+
+// GetPrefix метод реализует интерфейс отладочного журнала
+func (l MultiLogger) GetPrefix() string {
+	for _, handler := range l.handlers {
+		return handler.GetPrefix()
+	}
+
+	return ""
 }
 
 // NewSyslogLogger конструктор отладочного журнала с обработчиком сообщений через запись в файлы
@@ -296,6 +323,11 @@ func (l MutexLogger) WithPrefix(prefix string) Logger {
 	return NewMutexLogger(l.logger.WithPrefix(prefix))
 }
 
+// GetPrefix метод реализует интерфейс отладочного журнала
+func (l MutexLogger) GetPrefix() string {
+	return l.logger.GetPrefix()
+}
+
 // ClosableLogger структура отладочного журнала с функцией финализации состояния
 type ClosableLogger struct {
 	logger Logger
@@ -338,6 +370,11 @@ func (l ClosableLogger) Fatal(message string, context Context) {
 // WithPrefix метод реализует интерфейс отладочного журнала
 func (l ClosableLogger) WithPrefix(prefix string) Logger {
 	return NewClosableLogger(l.logger.WithPrefix(prefix), l.close)
+}
+
+// GetPrefix метод реализует интерфейс отладочного журнала
+func (l ClosableLogger) GetPrefix() string {
+	return l.logger.GetPrefix()
 }
 
 // NewLogger конструктор отладочного журнала по умолчанию
