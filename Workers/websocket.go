@@ -16,24 +16,24 @@ import (
 	"github.com/RogulinSV/streamdeck-statistico/v2/WebSocket"
 )
 
-type workerRegistryEntry struct {
+type entry struct {
 	worker *Scheduler.Worker
 	result Scheduler.Result
 }
 
 type WorkerRegistry struct {
-	entries map[string]workerRegistryEntry
+	entries map[string]entry
 }
 
 func NewWorkerRegistry() *WorkerRegistry {
 	return &WorkerRegistry{
-		entries: make(map[string]workerRegistryEntry),
+		entries: make(map[string]entry),
 	}
 }
 
 func (r *WorkerRegistry) Add(channel string, runner Scheduler.Runner, timeout uint, delay uint) {
 	var worker = Scheduler.NewWorker(channel, time.Duration(timeout)*time.Second, time.Duration(delay)*time.Second, runner)
-	r.entries[channel] = workerRegistryEntry{
+	r.entries[channel] = entry{
 		worker: worker,
 		result: Scheduler.NewResult(),
 	}
@@ -50,28 +50,28 @@ func (r *WorkerRegistry) Count() uint {
 }
 
 func (r *WorkerRegistry) GetWorker(channel string) *Scheduler.Worker {
-	if entry, ok := r.entries[channel]; ok {
-		return entry.worker
+	if e, ok := r.entries[channel]; ok {
+		return e.worker
 	}
 
 	return nil
 }
 
 func (r *WorkerRegistry) GetResult(channel string) Scheduler.Result {
-	if entry, ok := r.entries[channel]; ok {
-		return entry.result
+	if e, ok := r.entries[channel]; ok {
+		return e.result
 	}
 
 	return nil
 }
 
 func (r *WorkerRegistry) SetResult(channel string, result Scheduler.Result) bool {
-	var entry workerRegistryEntry
+	var e entry
 	var ok bool
 
-	if entry, ok = r.entries[channel]; ok {
-		entry.result = result
-		r.entries[channel] = entry
+	if e, ok = r.entries[channel]; ok {
+		e.result.Merge(result)
+		r.entries[channel] = e
 	}
 
 	return ok
@@ -93,6 +93,13 @@ func NewServerRunner(port uint16, scheduler *Scheduler.Scheduler, registry *Work
 	}
 }
 
+func (r *ServerRunner) Defaults() Scheduler.Result {
+	return Scheduler.AddMetric(
+		"clients",
+		Scheduler.NewMetric("Клиенты", "0"),
+	)
+}
+
 func (r *ServerRunner) Run(context context.Context, result chan<- Scheduler.Result) {
 	var handler = http.NewServeMux()
 	var route string
@@ -106,7 +113,8 @@ func (r *ServerRunner) Run(context context.Context, result chan<- Scheduler.Resu
 	route = "/subscribe/{channel}"
 	handler.HandleFunc(route, func(response http.ResponseWriter, request *http.Request) {
 		var channel = request.PathValue("channel")
-		var logger = r.logger.WithPrefix("[server(" + strings.Replace(route, "{channel}", channel, 1) + ") ")
+		var prefix = r.logger.GetPrefix() + " (url:" + strings.Replace(route, "{channel}", channel, 1) + ") "
+		var logger = r.logger.WithPrefix(prefix)
 
 		var counter *Counter
 		if c, ok := clients.Load(channel); ok {
@@ -187,6 +195,11 @@ func (r *ServerRunner) handle(channel string, connection *WebSocket.Connection, 
 		if r.registry.Has(channel) {
 			if !r.scheduler.HasWorker(channel) {
 				var worker = r.registry.GetWorker(channel)
+				if !r.registry.SetResult(channel, worker.Defaults()) {
+					r.logger.Error("Не удалось установить ответ по умолчанию для воркера {worker}", Logger.Context{
+						"worker": worker.Describe(),
+					})
+				}
 				r.scheduler.Start(worker)
 
 				go func(worker *Scheduler.Worker) {
