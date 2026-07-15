@@ -55,7 +55,13 @@ func main() {
 	var registry = Workers.NewWorkerRegistry()
 
 	registry.Add("torrent", Torrent.NewRunner(
-		Torrent.NewConfig("http://localhost:1010", "admin", ""),
+		Torrent.NewConfig(
+			"http://localhost:8081",
+			"admin",
+			"adminadmin",
+		).SetFilter(
+			Torrent.NewFilter(Torrent.TorrentStateRunning, nil, nil),
+		),
 		logger.WithPrefix("[worker.torrent] "),
 	), 10, 5)
 	logger.Info("Загружено фоновых задач: {count}", Logger.Context{
